@@ -60,6 +60,25 @@ force_export!(_FORCE_EXPORT_U32_4, u32, 4);
 force_export!(_FORCE_EXPORT_U32_8, u32, 8);
 force_export!(_FORCE_EXPORT_U64_8, u64, 8);
 
+// With AVX2, LLVM's SLP vectorizer packs the interleaved ANS states into one
+// vector register, putting slow GPR<->vector moves on the loop-carried
+// dependency chain (~3x slower). This empty asm emits no instructions, but
+// pins the state to a GPR, which stops that. Without AVX2 there is nothing to
+// stop and the pin costs a few percent, so only apply it where it pays.
+#[inline(always)]
+#[allow(unused_mut)] // only mutated where the asm is compiled in
+fn keep_scalar(mut state_idx: AnsState) -> AnsState {
+  #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+  unsafe {
+    std::arch::asm!(
+      "/* {0:e} */",
+      inout(reg) state_idx,
+      options(pure, nomem, nostack, preserves_flags),
+    );
+  }
+  state_idx
+}
+
 // this is entirely state - any precomputed information is in the ChunkLatentDecompressor
 #[derive(Clone, Debug)]
 pub struct PageLatentDecompressor<L: Latent> {
@@ -124,7 +143,7 @@ impl<L: Latent> PageLatentDecompressor<L> {
           *cld.scratch.latents.get_unchecked_mut(i) = lower;
           bits_past_byte += bits_to_read;
           offset_bit_idx += offset_bits;
-          $state_idx = node.next_state_idx_base as AnsState + ans_val;
+          $state_idx = keep_scalar(node.next_state_idx_base as AnsState + ans_val);
         };
       }
       handle_single_symbol!(0, state_idx_0);
